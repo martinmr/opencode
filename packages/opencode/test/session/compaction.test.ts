@@ -302,48 +302,26 @@ function reply(
   return (input) => {
     capture?.(input)
     return Stream.make(
-      { type: "start" } satisfies LLM.Event,
       { type: "text-start", id: "txt-0" } satisfies LLM.Event,
-      { type: "text-delta", id: "txt-0", delta: text, text } as LLM.Event,
+      { type: "text-delta", id: "txt-0", text } satisfies LLM.Event,
       { type: "text-end", id: "txt-0" } satisfies LLM.Event,
       {
-        type: "finish-step",
-        finishReason: "stop",
-        rawFinishReason: "stop",
-        response: { id: "res", modelId: "test-model", timestamp: new Date() },
-        providerMetadata: undefined,
+        type: "step-finish",
+        index: 0,
+        reason: "stop",
         usage: {
           inputTokens: 1,
           outputTokens: 1,
           totalTokens: 2,
-          inputTokenDetails: {
-            noCacheTokens: undefined,
-            cacheReadTokens: undefined,
-            cacheWriteTokens: undefined,
-          },
-          outputTokenDetails: {
-            textTokens: undefined,
-            reasoningTokens: undefined,
-          },
         },
       } satisfies LLM.Event,
       {
-        type: "finish",
-        finishReason: "stop",
-        rawFinishReason: "stop",
-        totalUsage: {
+        type: "request-finish",
+        reason: "stop",
+        usage: {
           inputTokens: 1,
           outputTokens: 1,
           totalTokens: 2,
-          inputTokenDetails: {
-            noCacheTokens: undefined,
-            cacheReadTokens: undefined,
-            cacheWriteTokens: undefined,
-          },
-          outputTokenDetails: {
-            textTokens: undefined,
-            reasoningTokens: undefined,
-          },
         },
       } satisfies LLM.Event,
     )
@@ -1365,7 +1343,7 @@ describe("session.compaction.process", () => {
       Stream.fromAsyncIterable(
         {
           async *[Symbol.asyncIterator]() {
-            yield { type: "start" } as LLM.Event
+            yield { type: "step-start", index: 0 } satisfies LLM.Event
             throw new APICallError({
               message: "boom",
               url: "https://example.com/v1/chat/completions",
@@ -1511,47 +1489,24 @@ describe("session.compaction.process", () => {
     const stub = llm()
     stub.push(
       Stream.make(
-        { type: "start" } satisfies LLM.Event,
-        { type: "tool-input-start", id: "call-1", toolName: "_noop" } satisfies LLM.Event,
-        { type: "tool-call", toolCallId: "call-1", toolName: "_noop", input: {} } satisfies LLM.Event,
+        { type: "tool-call", id: "call-1", name: "_noop", input: {} } satisfies LLM.Event,
         {
-          type: "finish-step",
-          finishReason: "tool-calls",
-          rawFinishReason: "tool_calls",
-          response: { id: "res", modelId: "test-model", timestamp: new Date() },
-          providerMetadata: undefined,
+          type: "step-finish",
+          index: 0,
+          reason: "tool-calls",
           usage: {
             inputTokens: 1,
             outputTokens: 1,
             totalTokens: 2,
-            inputTokenDetails: {
-              noCacheTokens: undefined,
-              cacheReadTokens: undefined,
-              cacheWriteTokens: undefined,
-            },
-            outputTokenDetails: {
-              textTokens: undefined,
-              reasoningTokens: undefined,
-            },
           },
         } satisfies LLM.Event,
         {
-          type: "finish",
-          finishReason: "tool-calls",
-          rawFinishReason: "tool_calls",
-          totalUsage: {
+          type: "request-finish",
+          reason: "tool-calls",
+          usage: {
             inputTokens: 1,
             outputTokens: 1,
             totalTokens: 2,
-            inputTokenDetails: {
-              noCacheTokens: undefined,
-              cacheReadTokens: undefined,
-              cacheWriteTokens: undefined,
-            },
-            outputTokenDetails: {
-              textTokens: undefined,
-              reasoningTokens: undefined,
-            },
           },
         } satisfies LLM.Event,
       ),
@@ -1886,15 +1841,6 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
       },
     })
 
@@ -1913,15 +1859,7 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: 800,
-          cacheReadTokens: 200,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
+        cacheReadInputTokens: 200,
       },
     })
 
@@ -1937,15 +1875,6 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
       },
       metadata: {
         anthropic: {
@@ -1966,15 +1895,7 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: 800,
-          cacheReadTokens: 200,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
+        cacheReadInputTokens: 200,
       },
       metadata: {
         anthropic: {},
@@ -1993,15 +1914,7 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: 400,
-          reasoningTokens: 100,
-        },
+        reasoningTokens: 100,
       },
     })
 
@@ -2027,15 +1940,7 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 0,
         outputTokens: 1_000_000,
         totalTokens: 1_000_000,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: 750_000,
-          reasoningTokens: 250_000,
-        },
+        reasoningTokens: 250_000,
       },
     })
 
@@ -2052,15 +1957,6 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
       },
     })
 
@@ -2088,15 +1984,6 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 1_000_000,
         outputTokens: 100_000,
         totalTokens: 1_100_000,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
       },
     })
 
@@ -2112,15 +1999,7 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: 800,
-          cacheReadTokens: 200,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
+        cacheReadInputTokens: 200,
       }
       if (npm === "@ai-sdk/amazon-bedrock") {
         const result = SessionNs.getUsage({
@@ -2171,15 +2050,7 @@ describe("SessionNs.getUsage", () => {
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: 800,
-          cacheReadTokens: 200,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
+        cacheReadInputTokens: 200,
       },
       metadata: {
         vertex: {

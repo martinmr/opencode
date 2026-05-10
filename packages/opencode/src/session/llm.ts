@@ -3,6 +3,7 @@ import * as Log from "@opencode-ai/core/util/log"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
+import type { FinishReason, LLMEvent, ProviderMetadata, ToolResultValue, Usage } from "@opencode-ai/llm"
 import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -24,10 +25,12 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { EffectBridge } from "@/effect/bridge"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import { errorMessage } from "@/util/error"
 
 const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 type Result = Awaited<ReturnType<typeof streamText>>
+type AISDKEvent = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
 
 // Avoid re-instantiating remeda's deep merge types in this hot LLM path; the runtime behavior is still mergeDeep.
 const mergeOptions = (target: Record<string, any>, source: Record<string, any> | undefined): Record<string, any> =>
@@ -52,7 +55,7 @@ export type StreamRequest = StreamInput & {
   abort: AbortSignal
 }
 
-export type Event = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
+export type Event = LLMEvent
 
 export interface Interface {
   readonly stream: (input: StreamInput) => Stream.Stream<Event, unknown>
@@ -427,7 +430,11 @@ const live: Layer.Layer<
 
             const result = yield* run({ ...input, abort: ctrl.signal })
 
-            return Stream.fromAsyncIterable(result.fullStream, (e) => (e instanceof Error ? e : new Error(String(e))))
+            const state = adapterState()
+            return Stream.fromAsyncIterable(result.fullStream, (e) => (e instanceof Error ? e : new Error(String(e)))).pipe(
+              Stream.mapEffect((event) => aiSDKEventToLLMEvents(state, event)),
+              Stream.flatMap((events) => Stream.fromIterable(events)),
+            )
           }),
         ),
       )
@@ -453,6 +460,213 @@ function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" 
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+}
+
+function adapterState() {
+  return {
+    step: 0,
+    text: 0,
+    currentTextID: undefined as string | undefined,
+    currentReasoningID: undefined as string | undefined,
+    toolNames: {} as Record<string, string>,
+  }
+}
+
+function finishReason(value: string | undefined): FinishReason {
+  if (
+    value === "stop" ||
+    value === "length" ||
+    value === "tool-calls" ||
+    value === "content-filter" ||
+    value === "error"
+  ) {
+    return value
+  }
+  return "unknown"
+}
+
+function providerMetadata(value: unknown): ProviderMetadata | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  return value as ProviderMetadata
+}
+
+function usage(value: unknown): Usage | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const item = value as {
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    reasoningTokens?: number
+    cachedInputTokens?: number
+    inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number }
+    outputTokenDetails?: { reasoningTokens?: number }
+  }
+  return {
+    inputTokens: item.inputTokens,
+    outputTokens: item.outputTokens,
+    totalTokens: item.totalTokens,
+    reasoningTokens: item.outputTokenDetails?.reasoningTokens ?? item.reasoningTokens,
+    cacheReadInputTokens: item.inputTokenDetails?.cacheReadTokens ?? item.cachedInputTokens,
+    cacheWriteInputTokens: item.inputTokenDetails?.cacheWriteTokens,
+    native: value as Record<string, unknown>,
+  }
+}
+
+function toolResult(value: unknown): ToolResultValue {
+  if (value && typeof value === "object" && "type" in value && "value" in value) return value as ToolResultValue
+  return { type: "json", value }
+}
+
+function aiSDKEventToLLMEvents(
+  state: ReturnType<typeof adapterState>,
+  event: AISDKEvent,
+): Effect.Effect<ReadonlyArray<LLMEvent>, unknown> {
+  switch (event.type) {
+    case "start":
+      return Effect.succeed([])
+
+    case "start-step":
+      return Effect.succeed([{ type: "step-start", index: state.step } satisfies LLMEvent])
+
+    case "finish-step":
+      return Effect.sync(() => [
+        {
+          type: "step-finish",
+          index: state.step++,
+          reason: finishReason(event.finishReason),
+          usage: usage(event.usage),
+          providerMetadata: providerMetadata(event.providerMetadata),
+        } satisfies LLMEvent,
+      ])
+
+    case "finish":
+      return Effect.succeed([
+        {
+          type: "request-finish",
+          reason: finishReason(event.finishReason),
+          usage: usage(event.totalUsage),
+        } satisfies LLMEvent,
+      ])
+
+    case "text-start":
+      return Effect.sync(() => {
+        state.currentTextID = event.id ?? `text-${state.text++}`
+        return [
+          {
+            type: "text-start",
+            id: state.currentTextID,
+            providerMetadata: providerMetadata(event.providerMetadata),
+          } satisfies LLMEvent,
+        ]
+      })
+
+    case "text-delta":
+      return Effect.succeed([
+        {
+          type: "text-delta",
+          id: event.id ?? state.currentTextID,
+          text: event.text,
+          providerMetadata: providerMetadata(event.providerMetadata),
+        } satisfies LLMEvent,
+      ])
+
+    case "text-end":
+      return Effect.succeed([
+        {
+          type: "text-end",
+          id: event.id ?? state.currentTextID ?? `text-${state.text++}`,
+          providerMetadata: providerMetadata(event.providerMetadata),
+        } satisfies LLMEvent,
+      ])
+
+    case "reasoning-start":
+      return Effect.sync(() => {
+        state.currentReasoningID = event.id
+        return []
+      })
+
+    case "reasoning-delta":
+      return Effect.succeed([
+        {
+          type: "reasoning-delta",
+          id: event.id ?? state.currentReasoningID,
+          text: event.text,
+          providerMetadata: providerMetadata(event.providerMetadata),
+        } satisfies LLMEvent,
+      ])
+
+    case "reasoning-end":
+      return Effect.sync(() => {
+        state.currentReasoningID = undefined
+        return []
+      })
+
+    case "tool-input-start":
+      return Effect.sync(() => {
+        state.toolNames[event.id] = event.toolName
+        return [
+          {
+            type: "tool-input-delta",
+            id: event.id,
+            name: event.toolName,
+            text: "",
+          } satisfies LLMEvent,
+        ]
+      })
+
+    case "tool-input-delta":
+      return Effect.succeed([
+        {
+          type: "tool-input-delta",
+          id: event.id,
+          name: state.toolNames[event.id] ?? "unknown",
+          text: event.delta ?? "",
+        } satisfies LLMEvent,
+      ])
+
+    case "tool-input-end":
+      return Effect.succeed([])
+
+    case "tool-call":
+      return Effect.sync(() => {
+        state.toolNames[event.toolCallId] = event.toolName
+        return [
+          {
+            type: "tool-call",
+            id: event.toolCallId,
+            name: event.toolName,
+            input: event.input,
+            providerMetadata: providerMetadata(event.providerMetadata),
+          } satisfies LLMEvent,
+        ]
+      })
+
+    case "tool-result":
+      return Effect.succeed([
+        {
+          type: "tool-result",
+          id: event.toolCallId,
+          name: state.toolNames[event.toolCallId] ?? "unknown",
+          result: toolResult(event.output),
+        } satisfies LLMEvent,
+      ])
+
+    case "tool-error":
+      return Effect.succeed([
+        {
+          type: "tool-error",
+          id: event.toolCallId,
+          name: state.toolNames[event.toolCallId] ?? "unknown",
+          message: errorMessage(event.error),
+        } satisfies LLMEvent,
+      ])
+
+    case "error":
+      return Effect.fail(event.error)
+
+    default:
+      return Effect.succeed([])
+  }
 }
 
 // Check if messages contain any tool-call content
