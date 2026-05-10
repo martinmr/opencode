@@ -332,13 +332,15 @@ export const layer: Layer.Layer<
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
             yield* ensureToolCall(value)
-            yield* updateToolCall(value.id, (match) => ({
-              ...match,
-              state:
-                match.state.status === "pending"
-                  ? { ...match.state, raw: match.state.raw + value.text }
-                  : match.state,
-            }))
+            if (value.text) {
+              yield* updateToolCall(value.id, (match) => ({
+                ...match,
+                state:
+                  match.state.status === "pending"
+                    ? { ...match.state, raw: match.state.raw + value.text }
+                    : match.state,
+              }))
+            }
             return
           }
 
@@ -347,6 +349,7 @@ export const layer: Layer.Layer<
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
             const toolCall = yield* ensureToolCall(value)
+            const input = toolInput(value.input)
             const raw = toolCall.part.state.status === "pending" ? toolCall.part.state.raw : ""
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             EventV2.run(SessionEvent.Tool.Input.Ended.Sync, {
@@ -360,7 +363,7 @@ export const layer: Layer.Layer<
               sessionID: ctx.sessionID,
               callID: value.id,
               tool: value.name,
-              input: toolInput(value.input),
+              input,
               provider: {
                 executed: toolCall.part.metadata?.providerExecuted === true,
                 ...(value.providerMetadata ? { metadata: value.providerMetadata } : {}),
@@ -372,10 +375,10 @@ export const layer: Layer.Layer<
               tool: value.name,
               state:
                 match.state.status === "running"
-                  ? { ...match.state, input: toolInput(value.input) }
+                  ? { ...match.state, input }
                   : {
                       status: "running",
-                      input: toolInput(value.input),
+                      input,
                       time: { start: Date.now() },
                     },
               metadata: {
@@ -395,7 +398,7 @@ export const layer: Layer.Layer<
                   part.type === "tool" &&
                   part.tool === value.name &&
                   part.state.status !== "pending" &&
-                  JSON.stringify(part.state.input) === JSON.stringify(toolInput(value.input)),
+                  JSON.stringify(part.state.input) === JSON.stringify(input),
               )
             ) {
               return
@@ -406,7 +409,7 @@ export const layer: Layer.Layer<
               permission: "doom_loop",
               patterns: [value.name],
               sessionID: ctx.assistantMessage.sessionID,
-              metadata: { tool: value.name, input: toolInput(value.input) },
+              metadata: { tool: value.name, input },
               always: [value.name],
               ruleset: agent.permission,
             })
@@ -434,7 +437,7 @@ export const layer: Layer.Layer<
                 })) ?? []),
               ],
               provider: {
-                executed: toolCall?.part.metadata?.providerExecuted === true,
+                executed: value.providerExecuted === true || toolCall?.part.metadata?.providerExecuted === true,
               },
               timestamp: DateTime.makeUnsafe(Date.now()),
             })

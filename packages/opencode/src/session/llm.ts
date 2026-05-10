@@ -3,7 +3,7 @@ import * as Log from "@opencode-ai/core/util/log"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
-import type { FinishReason, LLMEvent, ProviderMetadata, ToolResultValue, Usage } from "@opencode-ai/llm"
+import { ToolResultValue, type FinishReason, type LLMEvent, type ProviderMetadata, type Usage } from "@opencode-ai/llm"
 import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -513,8 +513,7 @@ function usage(value: unknown): Usage | undefined {
 }
 
 function toolResult(value: unknown): ToolResultValue {
-  if (value && typeof value === "object" && "type" in value && "value" in value) return value as ToolResultValue
-  return { type: "json", value }
+  return ToolResultValue.make(value)
 }
 
 function aiSDKEventToLLMEvents(
